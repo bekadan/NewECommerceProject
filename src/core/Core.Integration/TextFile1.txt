@@ -1,0 +1,23 @@
+﻿1. Purpose of Core.Integration
+
+Core.Integration is the abstraction layer for all external system interactions:
+
+Payment gateways (Stripe, PayPal, etc.)
+
+Shipping/logistics APIs (DHL, FedEx, etc.)
+
+Email/SMS services
+
+Third-party inventory or pricing services
+
+Any other external HTTP or messaging-based service
+
+Why we need it:
+
+Keeps your domain and application layers decoupled from external APIs
+
+Makes unit testing easy, because you can mock these interfaces
+
+Provides resilience and retry policies in one centralized place
+
+Supports events and integration messages (e.g., publishing domain events to other services)
