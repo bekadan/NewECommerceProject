@@ -1,8 +1,6 @@
-﻿using Microsoft.AspNetCore.Builder;
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Product.Infrastructure.DbMigrationApplier;
 using Product.Infrastructure.Extensions;
 
 namespace Product.Infrastructure;
