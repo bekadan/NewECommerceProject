@@ -58,6 +58,8 @@ public interface ISoftDeletableEntity
     /// Gets a value indicating whether the entity has been deleted.
     /// </summary>
     bool Deleted { get; }
+
+    void MarkDeleted();
 }
 
 /*

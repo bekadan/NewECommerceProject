@@ -10,13 +10,13 @@ public class RabbitMqOptions
     public bool EnableTelemetry { get; set; } = true;
 }
 
-{
-  "RabbitMq": {
-    "HostName": "localhost",
-    "MaxRetryAttempts": 5,
-    "BaseRetryDelay": "00:00:03",
-    "DlqExchangeName": "my-service.dlx",
-    "MetricsReportingInterval": "00:00:30",
-    "EnableTelemetry": true
-  }
-}
+//{
+//  "RabbitMq": {
+//    "HostName": "localhost",
+//    "MaxRetryAttempts": 5,
+//    "BaseRetryDelay": "00:00:03",
+//    "DlqExchangeName": "my-service.dlx",
+//    "MetricsReportingInterval": "00:00:30",
+//    "EnableTelemetry": true
+//  }
+//}
