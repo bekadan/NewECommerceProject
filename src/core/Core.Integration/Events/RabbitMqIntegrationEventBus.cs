@@ -133,6 +133,7 @@ public class RabbitMqIntegrationEventBus : IIntegrationEventBus, IDisposable
 
             int attempt = 0;
             bool handled = false;
+            Exception? lastException = null;
 
             while (attempt < _options.MaxRetryAttempts && !handled)
             {
@@ -140,35 +141,16 @@ public class RabbitMqIntegrationEventBus : IIntegrationEventBus, IDisposable
                 {
                     attempt++;
                     await handler(@event);
-                   await  _channel.BasicAckAsync(ea.DeliveryTag, false);
+                    await _channel.BasicAckAsync(ea.DeliveryTag, false);
 
                     _successEvents.AddOrUpdate(eventName, 1, (_, v) => v + 1);
                     _retryAttempts.AddOrUpdate(eventName, attempt, (_, v) => v + attempt);
-
-                    if (_options.EnableTelemetry && _telemetry != null)
-                    {
-                        _telemetry.TrackEvent("EventHandled", new Dictionary<string, string>
-                        {
-                            ["EventName"] = eventName,
-                            ["EventId"] = @event.Id.ToString(),
-                            ["Attempts"] = attempt.ToString()
-                        });
-                    }
-
-                    _logger.Information(
-                        "Handled event {EventName} with ID {EventId} after {Attempts} attempt(s)",
-                        eventName,
-                        @event.Id,
-                        attempt
-                    );
 
                     handled = true;
                 }
                 catch (Exception ex)
                 {
-                    _failedEvents.AddOrUpdate(eventName, 1, (_, v) => v + 1);
-                    _logger.Error(ex, "Failed handling event {EventName} attempt {Attempt}", eventName, attempt);
-
+                    lastException = ex;
                     if (attempt < _options.MaxRetryAttempts)
                     {
                         var delay = TimeSpan.FromMilliseconds(_options.BaseRetryDelay.TotalMilliseconds * Math.Pow(2, attempt - 1));
@@ -181,6 +163,49 @@ public class RabbitMqIntegrationEventBus : IIntegrationEventBus, IDisposable
                         _dlqEvents.AddOrUpdate(eventName, 1, (_, v) => v + 1);
                     }
                 }
+            }
+
+            // Only one telemetry report per event
+            if (_options.EnableTelemetry && _telemetry != null)
+            {
+                if (handled)
+                {
+                    _telemetry.TrackEvent("EventHandled", new Dictionary<string, string>
+                    {
+                        ["EventName"] = eventName,
+                        ["EventId"] = @event.Id.ToString(),
+                        ["Attempts"] = attempt.ToString()
+                    });
+                }
+                else
+                {
+                    _telemetry.TrackEvent("EventMovedToDLQ", new Dictionary<string, string>
+                    {
+                        ["EventName"] = eventName,
+                        ["EventId"] = @event.Id.ToString(),
+                        ["Attempts"] = attempt.ToString(),
+                        ["Exception"] = lastException?.Message ?? "Unknown"
+                    });
+                }
+            }
+
+            // Logging
+            if (handled)
+            {
+                _logger.Information(
+                    "Handled event {EventName} with ID {EventId} after {Attempts} attempt(s)",
+                    eventName,
+                    @event.Id,
+                    attempt
+                );
+            }
+            else
+            {
+                _logger.Warning(
+                    "Event {EventName} moved to DLQ after {Attempts} attempts",
+                    eventName,
+                    attempt
+                );
             }
         };
 

@@ -8,7 +8,7 @@ namespace Core.Integration.Events;
 This is infrastructure-agnostic — the interface doesn’t know if you use RabbitMQ, Kafka, Azure Service Bus, etc.
  */
 
-public interface IIntegrationEventBus
+public interface IIntegrationEventBus : IDisposable
 {
     /*
      TEvent : IIntegrationEvent
