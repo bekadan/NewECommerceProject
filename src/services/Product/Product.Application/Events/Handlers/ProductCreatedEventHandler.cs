@@ -1,24 +1,29 @@
-﻿using Core.Logging.Abstractions;
-using Core.Search.Abstractions;
+﻿using Core.Events.Abstractions;
+using Core.Integration.Events;
 using Product.Domain.Events;
 
 namespace Product.Application.Events.Handlers;
 
-public class ProductCreatedEventHandler
-: ElasticSearchEventHandlerBase<ProductCreatedEvent>
+public class ProductCreatedDomainHandler : IDomainEventHandler<ProductCreatedEvent>
 {
-    public ProductCreatedEventHandler(IElasticSearchIndexer indexer, ILogger logger)
-        : base(indexer, logger) { }
+    private readonly IIntegrationEventBus _eventBus;
 
-    protected override string IndexName => "products";
-
-    protected override string DocumentId(ProductCreatedEvent @event) => @event.Id.ToString();
-
-    protected override object MapToDocument(ProductCreatedEvent @event) => new
+    public ProductCreatedDomainHandler(IIntegrationEventBus eventBus)
     {
-        @event.Id,
-        @event.Name,
-        @event.Price,
-        @event.OccurredOn
-    };
+        _eventBus = eventBus;
+    }
+
+    public async Task HandleAsync(ProductCreatedEvent @event, CancellationToken cancellationToken = default)
+    {
+        // Convert domain event to integration event
+        var integrationEvent = new ProductCreatedIntegrationEvent(
+            @event.Id,
+            @event.Name,
+            @event.Price.Amount,
+            @event.Stock,
+            @event.OccurredOn
+        );
+
+        await _eventBus.PublishAsync(integrationEvent, cancellationToken);
+    }
 }

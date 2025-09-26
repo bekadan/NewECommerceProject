@@ -39,7 +39,7 @@ You can store events for audit logs or event sourcing.
      */
     public interface IDomainEvent
     {
-        DateTime OccuredOnUtc { get; }
+        DateTime OccurredOn { get; }
     }
 }
 

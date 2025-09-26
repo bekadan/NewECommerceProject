@@ -3,7 +3,7 @@ using Product.Domain.ValueObjects;
 
 namespace Product.Domain.Events;
 
-public sealed class ProductUpdatedEvent : IIntegrationEvent
+public sealed class ProductUpdatedEvent : IDomainEvent
 {
     public Guid Id { get; }
     public string Name { get; }

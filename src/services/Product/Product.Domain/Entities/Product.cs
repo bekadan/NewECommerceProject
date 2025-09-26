@@ -1,11 +1,13 @@
-﻿using Core.Shared.Abstractions;
+﻿using Core.Events.Abstractions;
+using Core.Shared.Abstractions;
 using Core.Shared.Primitives;
+using Core.Shared.Utility;
 using Product.Domain.Events;
 using Product.Domain.ValueObjects;
 
 namespace Product.Domain.Entities;
 
-public class Product : AggregateRoot<ProductCreatedEvent>, IAuditableEntity, ISoftDeletableEntity
+public class Product : AggregateRoot<IDomainEvent>, IAuditableEntity, ISoftDeletableEntity
 {
     // Backing fields for auditable / soft-delete
     private DateTime _createdOnUtc;
@@ -49,23 +51,29 @@ public class Product : AggregateRoot<ProductCreatedEvent>, IAuditableEntity, ISo
 
     public void UpdateStock(int quantity)
     {
-        if (quantity < 0)
-            throw new ArgumentException("Stock cannot be negative", nameof(quantity));
+        Ensure.NotLessThan(quantity, 0, "Stock cannot be negative", nameof(quantity));
+
+        var oldStock = Stock;
 
         Stock = quantity;
         ((IAuditableEntity)this).SetModified(); // explicit call
 
-        // Raise domain event if needed
-        // AddEvent(new ProductStockUpdatedEvent(Id, Stock));
+        AddEvent(new ProductStockUpdatedEvent(Id, oldStock, quantity));
     }
 
     public void UpdatePrice(Price price)
     {
-        Price = price ?? throw new ArgumentNullException(nameof(price));
+        var oldPrice = Price;
+
+        
+        Ensure.NotEmpty(price.Currency, "Price currency cannot be empty." ,nameof(price.Currency));
+        Ensure.NotLessThan(price.Amount, 0, "Amount cannot be less than zero" ,nameof(price.Amount));
+
+        Price = price;
+
         ((IAuditableEntity)this).SetModified(); // explicit call
 
-        // Raise domain event if needed
-        // AddEvent(new ProductPriceUpdatedEvent(Id, Price));
+        AddEvent(new ProductPriceUpdatedEvent(Id, oldPrice, price));
     }
 
     public void MarkDeleted()

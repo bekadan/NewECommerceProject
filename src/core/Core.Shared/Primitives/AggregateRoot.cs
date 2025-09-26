@@ -143,6 +143,8 @@ Instructor note: This is the mechanism by which aggregates “raise events”. A
     should be communicated (like OrderPlaced, ProductStockDecreased, etc.), you call AddEvent.
      */
     protected void AddEvent(TEvent @event) => _events.Add(@event);
+
+    public void ClearDomainEvents() => _events.Clear();
 }
 
 /*

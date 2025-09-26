@@ -29,7 +29,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core.Search", "src\core\Cor
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "services", "services", "{D084F580-1ACA-4728-923E-CDA97E64E769}"
 EndProject
-Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Product", "Product", "{784A348D-80F5-4E0C-854C-0B004A16B10F}"
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "ProductService", "ProductService", "{784A348D-80F5-4E0C-854C-0B004A16B10F}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Product.Domain", "src\services\Product\Product.Domain\Product.Domain.csproj", "{AFA3589B-307D-4FD8-B710-FC1295063B76}"
 EndProject
