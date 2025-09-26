@@ -5,19 +5,22 @@ using Core.BackgroundJobs.Utility;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Polly.Retry;
+using System.Reflection;
 
 namespace Core.BackgroundJobs;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddCoreBackgroundJobs(this IServiceCollection services, IConfiguration configuration)
+    public static IServiceCollection AddCoreBackgroundJobs(this IServiceCollection services, IConfiguration configuration, Assembly? assemblyToScan = null)
     {
+        assemblyToScan ??= Assembly.GetEntryAssembly();
+
         // Register BackgroundJobProcessor
         services.AddSingleton<BackgroundJobProcessor>();
 
         // Register all handlers dynamically
         services.Scan(scan => scan
-            .FromAssemblyOf<BackgroundJobProcessor>() // marker type
+            .FromAssemblies(assemblyToScan) // marker type
             .AddClasses(classes => classes.AssignableTo(typeof(IBackgroundJobHandler<>)))
             .AsImplementedInterfaces()
             .WithTransientLifetime());

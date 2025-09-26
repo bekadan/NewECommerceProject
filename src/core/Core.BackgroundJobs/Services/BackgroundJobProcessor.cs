@@ -24,19 +24,29 @@ public class BackgroundJobProcessor
     private readonly AsyncRetryPolicy _retryPolicy;
     private readonly AsyncTimeoutPolicy _timeoutPolicy;
     private readonly IIntegrationEventBus _eventBus;
+    private readonly IEnumerable<Type> _eventHandlerTypes;
 
     public BackgroundJobProcessor(
         IServiceProvider serviceProvider,
         ILogger<BackgroundJobProcessor> logger,
         IOptions<BackgroundJobOptions> options,
         IIntegrationEventBus eventBus,
-        IMetricsCollector metrics)
+        IMetricsCollector metrics,
+        IEnumerable<Type> eventHandlerTypes)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
         _options = options.Value;
         _eventBus = eventBus;
         _metrics = metrics;
+
+        // Discover all handler types dynamically
+        _eventHandlerTypes = eventHandlerTypes
+            .Select(h => h.GetType())
+            .SelectMany(t => t.GetInterfaces())
+            .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IBackgroundJobHandler<>))
+            .Select(i => i.GetGenericArguments()[0])
+            .Distinct();
 
         _retryPolicy = Policy
             .Handle<Exception>()
@@ -50,6 +60,19 @@ public class BackgroundJobProcessor
                 });
 
         _timeoutPolicy = Policy.TimeoutAsync(TimeSpan.FromSeconds(_options.TimeoutSeconds));
+        _eventHandlerTypes = eventHandlerTypes;
+    }
+
+    public void AutoSubscribeAll()
+    {
+        foreach (var eventType in _eventHandlerTypes)
+        {
+            var method = GetType().GetMethod(nameof(SubscribeToEvent))!
+                .MakeGenericMethod(eventType);
+
+            method.Invoke(this, null);
+            _logger.LogInformation("📬 Subscribed to event {EventName}", eventType.Name);
+        }
     }
 
     public void SubscribeToEvent<TEvent>() where TEvent : IIntegrationEvent
@@ -107,8 +130,16 @@ public class BackgroundJobProcessor
         }
         catch (Exception ex)
         {
+            stopwatch.Stop();
             await SendToDeadLetterQueueAsync(@event, ex);
             _metrics.IncrementJobsFailed(eventName);
+
+            _logger.LogError(ex,"❌ Job {EventName} failed after {RetryCount} retries. Sending to DLQ [Id: {EventId}]",
+                    eventName, _options.RetryCount, @event.Id
+             );
+
+            var dlqBus = scope.ServiceProvider.GetRequiredService<IIntegrationEventBus>();
+            await dlqBus.PublishAsync(new DeadLetterEvent(@event, ex.Message));
             throw new BackgroundJobFailedException(eventName, ex);
         }
     }

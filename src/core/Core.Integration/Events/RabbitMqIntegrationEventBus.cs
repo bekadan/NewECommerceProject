@@ -1,196 +1,229 @@
 ﻿using Core.Events.Abstractions;
+using Core.Integration.Options;
 using Core.Logging.Abstractions;
+using Microsoft.ApplicationInsights;
+using Microsoft.Extensions.Options;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 
 namespace Core.Integration.Events;
 
-/*
- Implements IIntegrationEventBus → standard interface for publishing and subscribing to integration events.
-
-Implements IDisposable → to clean up RabbitMQ connections/channels when the bus is no longer needed.
- */
-
 public class RabbitMqIntegrationEventBus : IIntegrationEventBus, IDisposable
 {
-    /*
-     _connection → RabbitMQ connection.
-
-_channel → RabbitMQ channel (used to communicate with RabbitMQ).
-
-_logger → used for logging important information.
-     */
-
     private IConnection? _connection;
     private IChannel? _channel;
     private readonly ILogger _logger;
+    private readonly TelemetryClient? _telemetry;
+    private readonly RabbitMqOptions _options;
 
+    // Metrics
+    private readonly ConcurrentDictionary<string, int> _receivedEvents = new();
+    private readonly ConcurrentDictionary<string, int> _successEvents = new();
+    private readonly ConcurrentDictionary<string, int> _failedEvents = new();
+    private readonly ConcurrentDictionary<string, int> _dlqEvents = new();
+    private readonly ConcurrentDictionary<string, int> _retryAttempts = new();
 
-    /*
-     Injects a logger.
-
-Throws ArgumentNullException if the logger is null, ensuring logging is always available.
-     */
-    public RabbitMqIntegrationEventBus(ILogger logger)
+    public RabbitMqIntegrationEventBus(
+        ILogger logger,
+        IOptions<RabbitMqOptions> options,
+        TelemetryClient? telemetry = null)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _options = options?.Value ?? throw new ArgumentNullException(nameof(options));
+        _telemetry = telemetry;
+
+        _logger.Information("RabbitMQ initialized at {Host}", _options.HostName);
     }
 
-    /*
-     Creates a RabbitMQ connection and channel asynchronously.
-
-Declares an exchange named "integration_events" of type Fanout:
-
-Fanout → broadcasts messages to all bound queues.
-
-Durable → survives RabbitMQ restarts.
-     */
-
-    private async Task InitializeAsync(string hostName)
+    public async Task InitializeAsync()
     {
-        var factory = new ConnectionFactory() { HostName = hostName };
+        if (_connection != null && _channel != null)
+            return; // already initialized
+
+        // Synchronous connection & channel creation
+        var factory = new ConnectionFactory { HostName = _options.HostName };
         _connection = await factory.CreateConnectionAsync();
         _channel = await _connection.CreateChannelAsync();
+
+        // Async exchange declaration
         await _channel.ExchangeDeclareAsync(
             exchange: "integration_events",
             type: ExchangeType.Fanout,
             durable: true
         );
+
+        if (!string.IsNullOrWhiteSpace(_options.DlqExchangeName))
+        {
+            await _channel.ExchangeDeclareAsync(
+                exchange: _options.DlqExchangeName,
+                type: ExchangeType.Fanout,
+                durable: true
+            );
+        }
+
+        _logger.Information("RabbitMQ initialized for host {HostName}", _options.HostName);
     }
 
-
-    /*
-     Static method to create and initialize the bus.
-
-Ensures the RabbitMQ channel and connection are ready before use.
-     */
-    public static async Task<RabbitMqIntegrationEventBus> CreateAsync(ILogger logger, string hostName = "localhost")
+    // Factory method for async initialization if needed
+    public async static Task<RabbitMqIntegrationEventBus> CreateAsync(
+        ILogger logger,
+        IOptions<RabbitMqOptions> options,
+        TelemetryClient? telemetry = null)
     {
-        var bus = new RabbitMqIntegrationEventBus(logger);
-        await bus.InitializeAsync(hostName);
+        var bus = new RabbitMqIntegrationEventBus(logger, options, telemetry);
+        await bus.InitializeAsync();
         return bus;
     }
 
-
-    /*
-     Step 1: Check if the channel is initialized.
-
-Step 2: Serialize the event to JSON.
-
-Step 3: Convert the JSON string to bytes (RabbitMQ only sends byte arrays).
-
-Step 4: Publish to the "integration_events" exchange using BasicPublishAsync.
-
-Step 5: Log the event publication.
-     */
+    #region Publish
 
     public async Task PublishAsync<TEvent>(TEvent @event) where TEvent : IIntegrationEvent
     {
-        if (_channel == null)
-        {
-            throw new InvalidOperationException("The RabbitMQ channel has not been initialized.");
-        }
+        if (_channel is null) throw new InvalidOperationException("Channel is not initialized!");
 
         var eventName = typeof(TEvent).Name;
-        
-
         var message = JsonSerializer.Serialize(@event);
         var body = Encoding.UTF8.GetBytes(message);
 
-        
-
-        await _channel.BasicPublishAsync(
-            exchange: "integration_events",
-            routingKey: string.Empty,
-            mandatory: false,
-            body: Encoding.UTF8.GetBytes(message)
-        );
+        await _channel.BasicPublishAsync("integration_events", string.Empty, mandatory: false, body: body);
 
         _logger.Information("Published event {EventName} with ID {EventId}", eventName, @event.Id);
+
+        if (_options.EnableTelemetry && _telemetry != null)
+        {
+            _telemetry.TrackEvent("EventPublished", new Dictionary<string, string>
+            {
+                ["EventName"] = eventName,
+                ["EventId"] = @event.Id.ToString()
+            });
+        }
     }
 
-    /*
-     Step 1: Ensure the channel is initialized.
+    #endregion
 
-Step 2: Declare the same "integration_events" exchange (idempotent in RabbitMQ).
-
-Step 3: Declare a new queue (auto-generated name) and bind it to the exchange.
-
-Step 4: Create an AsyncEventingBasicConsumer to receive messages asynchronously.
-
-Step 5: Deserialize each received message back into the event type TEvent.
-
-Step 6: Call the provided handler function to process the event.
-
-Step 7: Acknowledge the message if successfully handled (BasicAckAsync).
-
-Step 8: Log success or errors.
-     */
+    #region Subscribe
 
     public async Task SubscribeAsync<TEvent>(Func<TEvent, Task> handler) where TEvent : IIntegrationEvent
     {
-        if (_channel == null)
-        {
-            throw new InvalidOperationException("The RabbitMQ channel has not been initialized.");
-        }
+        if (_channel is null) throw new InvalidOperationException("Channel is not initialized!");
 
         var eventName = typeof(TEvent).Name;
-        await _channel.ExchangeDeclareAsync(exchange: "integration_events", type: ExchangeType.Fanout);
 
+        // Queue setup
         var queueName = await _channel.QueueDeclareAsync();
-        await _channel.QueueBindAsync(queue: queueName.QueueName, exchange: "integration_events", routingKey: "");
+        await _channel.QueueBindAsync(queueName.QueueName, "integration_events", string.Empty);
 
         var consumer = new AsyncEventingBasicConsumer(_channel);
+
         consumer.ReceivedAsync += async (sender, ea) =>
         {
             var message = Encoding.UTF8.GetString(ea.Body.ToArray());
             var @event = JsonSerializer.Deserialize<TEvent>(message);
 
-            if (@event != null)
+            if (@event == null)
+            {
+                await _channel.BasicAckAsync(ea.DeliveryTag, false);
+                return;
+            }
+
+            _receivedEvents.AddOrUpdate(eventName, 1, (_, v) => v + 1);
+
+            int attempt = 0;
+            bool handled = false;
+
+            while (attempt < _options.MaxRetryAttempts && !handled)
             {
                 try
                 {
+                    attempt++;
                     await handler(@event);
-                    await _channel.BasicAckAsync(ea.DeliveryTag, multiple: false);
-                    _logger.Information("Handled event {EventName} with ID {EventId}", eventName, @event.Id);
+                   await  _channel.BasicAckAsync(ea.DeliveryTag, false);
+
+                    _successEvents.AddOrUpdate(eventName, 1, (_, v) => v + 1);
+                    _retryAttempts.AddOrUpdate(eventName, attempt, (_, v) => v + attempt);
+
+                    if (_options.EnableTelemetry && _telemetry != null)
+                    {
+                        _telemetry.TrackEvent("EventHandled", new Dictionary<string, string>
+                        {
+                            ["EventName"] = eventName,
+                            ["EventId"] = @event.Id.ToString(),
+                            ["Attempts"] = attempt.ToString()
+                        });
+                    }
+
+                    _logger.Information(
+                        "Handled event {EventName} with ID {EventId} after {Attempts} attempt(s)",
+                        eventName,
+                        @event.Id,
+                        attempt
+                    );
+
+                    handled = true;
                 }
                 catch (Exception ex)
                 {
-                    _logger.Error(ex, "Error handling event {EventName}", eventName);
-                    // Optionally: implement retry or dead-letter queue
+                    _failedEvents.AddOrUpdate(eventName, 1, (_, v) => v + 1);
+                    _logger.Error(ex, "Failed handling event {EventName} attempt {Attempt}", eventName, attempt);
+
+                    if (attempt < _options.MaxRetryAttempts)
+                    {
+                        var delay = TimeSpan.FromMilliseconds(_options.BaseRetryDelay.TotalMilliseconds * Math.Pow(2, attempt - 1));
+                        await Task.Delay(delay);
+                    }
+                    else
+                    {
+                        await PublishToDlqAsync(@event);
+                        await _channel.BasicAckAsync(ea.DeliveryTag, false);
+                        _dlqEvents.AddOrUpdate(eventName, 1, (_, v) => v + 1);
+                    }
                 }
             }
         };
 
-        await _channel.BasicConsumeAsync(queue: queueName, autoAck: false, consumer: consumer);       
+        await _channel.BasicConsumeAsync(queueName, autoAck: false, consumer: consumer);
+
+        _logger.Information("Subscribed to event {EventName}", eventName);
+        
     }
+
+    #endregion
+
+    #region DLQ
 
     private async Task PublishToDlqAsync<TEvent>(TEvent @event)
     {
-        if (_channel == null)
-        {
-            throw new InvalidOperationException("The RabbitMQ channel has not been initialized.");
-        }
+        if (_channel is null) throw new InvalidOperationException("Channel is not initialized!");
 
-        var json = JsonSerializer.Serialize(@event);
-        var body = Encoding.UTF8.GetBytes(json);
+        var body = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(@event));
 
         await _channel.BasicPublishAsync(
-            exchange: "my-service.dlx",
-            routingKey: typeof(TEvent).Name,
+            _options.DlqExchangeName,
+            typeof(TEvent).Name,
             mandatory: false,
             body: body
         );
 
-        _logger.Error("Message moved to DLQ: {EventType}", typeof(TEvent).Name);
+        _logger.Warning("Message moved to DLQ: {EventType}", typeof(TEvent).Name);
     }
 
+    #endregion
 
-    /*
-     Properly closes and disposes the channel and connection when the bus is no longer needed.
-     */
+    #region Metrics
+
+    public IReadOnlyDictionary<string, int> Metrics => new Dictionary<string, int>
+    {
+        { "Received", _receivedEvents.Values.Sum() },
+        { "Success", _successEvents.Values.Sum() },
+        { "Failed", _failedEvents.Values.Sum() },
+        { "DLQ", _dlqEvents.Values.Sum() },
+        { "RetryAttempts", _retryAttempts.Values.Sum() }
+    };
+
+    #endregion
 
     public void Dispose()
     {
@@ -198,32 +231,3 @@ Step 8: Log success or errors.
         _connection?.Dispose();
     }
 }
-
-/*
- Key Points
-
-Uses RabbitMQ Fanout Exchange → broadcasts messages to all subscribers.
-
-Handles JSON serialization for events.
-
-Provides async/await support for both publishing and subscribing.
-
-Logs all important actions.
-
-Ensures channel initialization before use.
-
-Implements disposable pattern to release resources.
- */
-
-/*
- var bus = new RabbitMqIntegrationEventBus(logger, "localhost");
-await bus.InitializeAsync();
-
-await bus.PublishAsync(new OrderCreatedEvent(...));
-
-await bus.SubscribeAsync<OrderCreatedEvent>(async evt =>
-{
-    // handle event
-});
-
- */
